@@ -1,9 +1,0 @@
-python3 -m ensurepip --upgrade
-python3 -m pip install uvicorn fastapi pypdf openai python-multipart
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install uvicorn fastapi pypdf openai python-multipart
-python -m uvicorn main:app --reload
-kill -9 $(lsof -ti:8000)
-lsof -i :8000
-alias hi-"history"1017

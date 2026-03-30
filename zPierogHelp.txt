@@ -1,0 +1,23 @@
+python3 -m ensurepip --upgrade
+python3 -m pip install uvicorn fastapi pypdf openai python-multipart
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install uvicorn fastapi pypdf openai python-multipart
+python -m uvicorn main:app --reload
+kill -9 $(lsof -ti:8000)
+
+ git init
+ 1062  git remote add origin https://github.com/sgp999/PDF-Comparison.git
+ 1063  git branch -M main
+ 1064  git .
+ 1065  git add .
+ 1066  git commit -m "clean initial commit - no secrets"
+ 1067  git push -u origin main
+ 1068  git pull origin main --allow-unrelated-histories\ngit push -u origin main
+ 1069  git push -u origin main --force
+ 1070  git status
+ 1071  git push -u origin main --force
+
+
+lsof -i :8000
+alias hi-"history"1017
