@@ -2,24 +2,20 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pypdf import PdfReader
 from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
 import uuid
 import json
+import re
 
-# -----------------------------
-# Setup
-# -----------------------------
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 app = FastAPI()
 
 
-# -----------------------------
-# Extract text from PDF
-# -----------------------------
 def extract_text_from_pdf(upload_file: UploadFile) -> str:
     try:
         reader = PdfReader(upload_file.file)
@@ -36,23 +32,33 @@ def extract_text_from_pdf(upload_file: UploadFile) -> str:
         raise HTTPException(status_code=500, detail=f"Error reading PDF: {str(e)}")
 
 
-# -----------------------------
-# AI Extraction
-# -----------------------------
-def extract_insurance_data(text):
+def clean_json_response(raw_text: str) -> str:
+    raw_text = raw_text.strip()
+
+    if raw_text.startswith("```"):
+        raw_text = re.sub(r"^```json", "", raw_text)
+        raw_text = re.sub(r"^```", "", raw_text)
+        raw_text = re.sub(r"```$", "", raw_text)
+        raw_text = raw_text.strip()
+
+    return raw_text
+
+
+def extract_insurance_data(text: str) -> dict:
     prompt = f"""
-You are an expert at reading health insurance policies.
+You are an expert at reading insurance policy documents.
 
 Extract structured data from the text below.
 
-Return ONLY valid JSON. No explanation.
+Return ONLY valid JSON.
+Do not include markdown.
+Do not include explanation.
 
 Rules:
 - If a value is not found, return "N/A"
-- Keep dollar amounts exactly as written (e.g. $45, $1,000, $250 per visit)
-- Do not guess values
-- Prefer numbers over descriptions
-- If multiple values exist, choose the most common / standard one
+- Keep dollar amounts exactly as written
+- Do not guess
+- If multiple values appear, choose the clearest standard benefit amount
 
 Fields:
 - plan_name
@@ -78,26 +84,30 @@ Fields:
 - generic_drugs
 - preferred_brand_drugs
 
-Text:
-{text[:8000]}
+Policy text:
+{text[:12000]}
 """
 
-    response = client.responses.create(
-        model="gpt-4o-mini",
-        input=prompt
-    )
-
     try:
+        response = client.responses.create(
+            model="gpt-4o-mini",
+            input=prompt
+        )
+
         raw = response.output[0].content[0].text
-        return json.loads(raw)
-    except:
+        cleaned = clean_json_response(raw)
+        data = json.loads(cleaned)
+
+        if isinstance(data, dict):
+            return data
+
+        return {}
+
+    except Exception:
         return {}
 
 
-# -----------------------------
-# Build comparison table
-# -----------------------------
-def build_comparison_rows(data1, data2):
+def build_comparison_rows(data1: dict, data2: dict):
     fields = [
         ("Plan Name", "plan_name"),
         ("Premium", "premium"),
@@ -135,15 +145,26 @@ def build_comparison_rows(data1, data2):
     return rows
 
 
-# -----------------------------
-# Save Excel
-# -----------------------------
+def safe_filename(name: str) -> str:
+    name = name.replace(".pdf", "")
+    name = re.sub(r"[^A-Za-z0-9_-]+", "_", name)
+    return name[:40]
+
+
 def save_to_excel(rows, output_path: str):
     wb = Workbook()
     ws = wb.active
     ws.title = "Comparison Results"
 
     ws.append(["Field", "Policy 1", "Policy 2"])
+
+    header_fill = PatternFill(fill_type="solid", start_color="D9EAF7", end_color="D9EAF7")
+    bold_font = Font(bold=True)
+
+    for cell in ws[1]:
+        cell.font = bold_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
 
     for row in rows:
         ws.append([
@@ -152,51 +173,97 @@ def save_to_excel(rows, output_path: str):
             row.get("Policy 2", "")
         ])
 
-    ws.column_dimensions["A"].width = 28
-    ws.column_dimensions["B"].width = 35
-    ws.column_dimensions["C"].width = 35
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 38
+    ws.column_dimensions["C"].width = 38
+    ws.freeze_panes = "A2"
 
     wb.save(output_path)
 
 
-# -----------------------------
-# Home
-# -----------------------------
 @app.get("/")
 def root():
     return {"message": "API is running"}
 
 
-# -----------------------------
-# UI page
-# -----------------------------
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 @app.get("/ui", response_class=HTMLResponse)
 def ui():
     return """
     <html>
         <head>
-            <title>PDF Comparison Tool</title>
+            <title>Insurance PDF Comparison</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    max-width: 900px;
+                    margin: 40px auto;
+                    padding: 20px;
+                    background: #f7f9fc;
+                }
+                .card {
+                    background: white;
+                    padding: 30px;
+                    border-radius: 12px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                }
+                h1 {
+                    margin-top: 0;
+                }
+                .button {
+                    background: #2563eb;
+                    color: white;
+                    border: none;
+                    padding: 12px 18px;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    font-size: 16px;
+                }
+                .button:hover {
+                    background: #1d4ed8;
+                }
+                input[type="file"] {
+                    margin-top: 8px;
+                    margin-bottom: 20px;
+                }
+                .note {
+                    color: #555;
+                    font-size: 14px;
+                }
+            </style>
         </head>
         <body>
-            <h2>Compare Insurance PDFs</h2>
+            <div class="card">
+                <h1>Compare Insurance PDFs</h1>
+                <p class="note">Upload two policy PDFs to compare benefits and costs side by side.</p>
 
-            <form action="/compare" enctype="multipart/form-data" method="post">
-                <label>Policy 1 PDF:</label><br>
-                <input type="file" name="file1" accept=".pdf"><br><br>
+                <form action="/compare" enctype="multipart/form-data" method="post" onsubmit="showLoading()">
+                    <label><strong>Policy 1 PDF</strong></label><br>
+                    <input type="file" name="file1" accept=".pdf" required><br>
 
-                <label>Policy 2 PDF:</label><br>
-                <input type="file" name="file2" accept=".pdf"><br><br>
+                    <label><strong>Policy 2 PDF</strong></label><br>
+                    <input type="file" name="file2" accept=".pdf" required><br>
 
-                <button type="submit">Compare Files</button>
-            </form>
+                    <button class="button" type="submit">Compare Files</button>
+                </form>
+
+                <p id="loading" style="display:none; margin-top:20px;"><strong>Processing PDFs...</strong></p>
+            </div>
+
+            <script>
+                function showLoading() {
+                    document.getElementById("loading").style.display = "block";
+                }
+            </script>
         </body>
     </html>
     """
 
 
-# -----------------------------
-# Compare route
-# -----------------------------
 @app.post("/compare", response_class=HTMLResponse)
 async def compare_pdfs(file1: UploadFile = File(...), file2: UploadFile = File(...)):
     if not file1.filename.lower().endswith(".pdf") or not file2.filename.lower().endswith(".pdf"):
@@ -208,7 +275,6 @@ async def compare_pdfs(file1: UploadFile = File(...), file2: UploadFile = File(.
     text2 = extract_text_from_pdf(file2)
     file2.file.seek(0)
 
-    # AI extraction
     data1 = extract_insurance_data(text1)
     data2 = extract_insurance_data(text2)
 
@@ -217,6 +283,10 @@ async def compare_pdfs(file1: UploadFile = File(...), file2: UploadFile = File(.
     os.makedirs("exports", exist_ok=True)
 
     file_id = str(uuid.uuid4())
+
+    file1_base = safe_filename(file1.filename)
+    file2_base = safe_filename(file2.filename)
+    download_name = f"{file1_base}_vs_{file2_base}.xlsx"
     output_path = os.path.join("exports", f"{file_id}.xlsx")
 
     save_to_excel(comparison_rows, output_path)
@@ -235,36 +305,75 @@ async def compare_pdfs(file1: UploadFile = File(...), file2: UploadFile = File(.
     <html>
         <head>
             <title>Comparison Results</title>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    max-width: 1100px;
+                    margin: 40px auto;
+                    padding: 20px;
+                    background: #f7f9fc;
+                }}
+                .card {{
+                    background: white;
+                    padding: 30px;
+                    border-radius: 12px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                }}
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 20px;
+                }}
+                th, td {{
+                    border: 1px solid #dcdcdc;
+                    padding: 10px;
+                    text-align: left;
+                    vertical-align: top;
+                }}
+                th {{
+                    background: #e8f0fe;
+                }}
+                .button {{
+                    display: inline-block;
+                    background: #2563eb;
+                    color: white;
+                    text-decoration: none;
+                    padding: 12px 18px;
+                    border-radius: 8px;
+                    margin-top: 20px;
+                }}
+                .button:hover {{
+                    background: #1d4ed8;
+                }}
+                .secondary {{
+                    background: #64748b;
+                    margin-left: 10px;
+                }}
+            </style>
         </head>
         <body>
-            <h2>Comparison Results</h2>
+            <div class="card">
+                <h1>Comparison Results</h1>
 
-            <table border="1" cellpadding="8" cellspacing="0">
-                <tr>
-                    <th>Field</th>
-                    <th>Policy 1</th>
-                    <th>Policy 2</th>
-                </tr>
-                {table_rows}
-            </table>
+                <table>
+                    <tr>
+                        <th>Field</th>
+                        <th>Policy 1</th>
+                        <th>Policy 2</th>
+                    </tr>
+                    {table_rows}
+                </table>
 
-            <br>
-            <a href="/download/{file_id}">
-                <button>Save to Excel</button>
-            </a>
-
-            <br><br>
-            <a href="/ui">Compare another pair of PDFs</a>
+                <a class="button" href="/download/{file_id}?name={download_name}">Save to Excel</a>
+                <a class="button secondary" href="/ui">Compare Another Pair</a>
+            </div>
         </body>
     </html>
     """
 
 
-# -----------------------------
-# Download Excel
-# -----------------------------
 @app.get("/download/{file_id}")
-def download_file(file_id: str):
+def download_file(file_id: str, name: str = "comparison_results.xlsx"):
     file_path = os.path.join("exports", f"{file_id}.xlsx")
 
     if not os.path.exists(file_path):
@@ -272,6 +381,6 @@ def download_file(file_id: str):
 
     return FileResponse(
         path=file_path,
-        filename="comparison_results.xlsx",
+        filename=name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
