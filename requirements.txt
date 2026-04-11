@@ -1,7 +1,6 @@
-fastapi
-uvicorn[standard]
+streamlit
 pypdf
-openpyxl
 openai
 python-dotenv
-python-multipart
+requests
+uvicorn
